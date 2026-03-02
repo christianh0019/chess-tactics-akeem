@@ -149,7 +149,7 @@ export default function CreatorPage() {
     };
 
     // ─── squareRenderer: intercept HTML5 drops from the palette ───
-    const squareRenderer = ({ square, squareColor, children }: any) => {
+    const squareRenderer = ({ square, squareColor: _squareColor, children }: any) => {
         const isHighlighted = dropHighlight === square;
         return (
             <div
