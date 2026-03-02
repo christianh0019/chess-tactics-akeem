@@ -24,55 +24,50 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
-        // Check active sessions and sets the user
-        const checkUser = async () => {
-            try {
-                const { data: { session } } = await supabase.auth.getSession();
-                setUser(session?.user ?? null);
+        let isMounted = true;
 
-                if (session?.user) {
-                    await checkAdminStatus(session.user.id);
-                }
-            } catch (error) {
-                console.error('Error checking auth session:', error);
-            } finally {
-                setLoading(false);
+        // Safety net: always stop loading after 5 seconds max
+        const safetyTimeout = setTimeout(() => {
+            if (isMounted) setLoading(false);
+        }, 5000);
+
+        const checkAdminStatus = async (userId: string) => {
+            try {
+                const { data } = await supabase
+                    .from('profiles')
+                    .select('is_admin')
+                    .eq('id', userId)
+                    .single();
+                if (isMounted) setIsAdmin(!!data?.is_admin);
+            } catch {
+                if (isMounted) setIsAdmin(false);
             }
         };
 
-        checkUser();
-
-        // Listen for changes on auth state
+        // Single source of truth: onAuthStateChange handles INITIAL_SESSION too.
+        // This fires immediately on mount with the stored session from localStorage.
         const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
+            if (!isMounted) return;
+
             setUser(session?.user ?? null);
+
             if (session?.user) {
                 await checkAdminStatus(session.user.id);
             } else {
                 setIsAdmin(false);
             }
+
+            // Mark loading done after first auth event is processed
             setLoading(false);
+            clearTimeout(safetyTimeout);
         });
 
         return () => {
+            isMounted = false;
+            clearTimeout(safetyTimeout);
             subscription.unsubscribe();
         };
     }, []);
-
-    const checkAdminStatus = async (userId: string) => {
-        try {
-            const { data, error } = await supabase
-                .from('profiles')
-                .select('is_admin')
-                .eq('id', userId)
-                .single();
-
-            if (error) throw error;
-            setIsAdmin(!!data?.is_admin);
-        } catch (error) {
-            console.error('Error checking admin status:', error);
-            setIsAdmin(false); // Default to false if we can't verify
-        }
-    };
 
     const signOut = async () => {
         await supabase.auth.signOut();
