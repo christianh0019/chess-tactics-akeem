@@ -8,6 +8,7 @@ export default function CreatorPage() {
     const [boardWidth] = useState(500);
     const [game, setGame] = useState(new Chess());
     const [mode, setMode] = useState<'setup' | 'sequence'>('setup');
+    const [selectedPiece, setSelectedPiece] = useState<string | null>(null);
 
     // Tactic State
     const [tacticTitle, setTacticTitle] = useState('');
@@ -16,13 +17,20 @@ export default function CreatorPage() {
     const [solution, setSolution] = useState<string[]>([]);
     const [startingFen, setStartingFen] = useState('8/8/8/8/8/8/8/8 w - - 0 1');
 
-    const handlePieceDrop = ({ sourceSquare, targetSquare, piece }: { sourceSquare: string, targetSquare: string | null, piece: any }) => {
+    const handlePieceDrop = (sourceSquare: string, targetSquare: string, piece: string) => {
         if (!targetSquare) return false;
 
         if (mode === 'setup') {
-            // Setup mode essentially allows freely setting the board. 
-            // Since react-chessboard doesn't easily expose the raw pieces array via drop alone, users can paste a FEN 
-            // or just rely on sequence recording from a valid starting position.
+            const gameCopy = new Chess(game.fen());
+
+            // Allow piece movement on the board during setup mode
+            const existingPiece = gameCopy.get(sourceSquare as any);
+            if (existingPiece) {
+                gameCopy.remove(sourceSquare as any);
+                gameCopy.put({ type: piece[1].toLowerCase() as any, color: piece[0] as any }, targetSquare as any);
+                setGame(gameCopy);
+                setStartingFen(gameCopy.fen());
+            }
             return true;
         } else {
             // Sequence mode: Play legal moves to build the solution array
@@ -136,32 +144,91 @@ export default function CreatorPage() {
 
                     {mode === 'setup' && (
                         <div style={{ marginBottom: '1rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                            <label style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>FEN (Paste here to load a layout quickly):</label>
-                            <input
-                                value={startingFen}
-                                onChange={e => {
-                                    setStartingFen(e.target.value);
-                                    try { setGame(new Chess(e.target.value)); } catch (e) { }
-                                }}
-                                style={{ padding: '0.5rem', background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(255,255,255,0.1)', color: 'var(--accent-primary)', width: '100%', fontFamily: 'monospace' }}
-                            />
+                            <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+                                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                                    <label style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>FEN (Paste here to load a layout quickly):</label>
+                                    <input
+                                        value={startingFen}
+                                        onChange={e => {
+                                            setStartingFen(e.target.value);
+                                            try { setGame(new Chess(e.target.value)); } catch (e) { }
+                                        }}
+                                        style={{ padding: '0.5rem', background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(255,255,255,0.1)', color: 'var(--accent-primary)', width: '100%', fontFamily: 'monospace', borderRadius: '4px' }}
+                                    />
+                                </div>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                                    <label style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>Player To Move</label>
+                                    <select
+                                        value={game.turn()}
+                                        onChange={(e) => {
+                                            const newFen = game.fen();
+                                            const parts = newFen.split(' ');
+                                            parts[1] = e.target.value;
+                                            try {
+                                                const newGame = new Chess(parts.join(' '));
+                                                setGame(newGame);
+                                                setStartingFen(parts.join(' '));
+                                            } catch (e) { }
+                                        }}
+                                        style={{ padding: '0.5rem', background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(255,255,255,0.1)', color: 'white', borderRadius: '4px', cursor: 'pointer' }}
+                                    >
+                                        <option value="w">White</option>
+                                        <option value="b">Black</option>
+                                    </select>
+                                </div>
+                            </div>
                         </div>
                     )}
 
-                    <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '1rem' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginBottom: '1rem' }}>
                         <div style={{ width: boardWidth }}>
                             <Chessboard
                                 options={{
+                                    boardOrientation: game.turn() === 'w' ? 'white' : 'black',
                                     id: "creator-board",
                                     position: mode === 'setup' ? startingFen : game.fen(),
                                     allowDragging: true,
                                     darkSquareStyle: { backgroundColor: 'var(--board-dark)' },
                                     lightSquareStyle: { backgroundColor: 'var(--board-light)' },
                                     dropSquareStyle: { boxShadow: 'inset 0 0 1px 6px rgba(59, 130, 246, 0.5)' },
-                                    onPieceDrop: handlePieceDrop
+                                    onPieceDrop: handlePieceDrop as any,
+                                    onSquareClick: ({ square }) => {
+                                        if (mode === 'setup' && selectedPiece) {
+                                            const gameCopy = new Chess(game.fen());
+                                            if (selectedPiece === 'trash') {
+                                                gameCopy.remove(square as any);
+                                            } else {
+                                                gameCopy.put({ type: selectedPiece[1].toLowerCase() as any, color: selectedPiece[0] as any }, square as any);
+                                            }
+                                            setGame(gameCopy);
+                                            setStartingFen(gameCopy.fen());
+                                        }
+                                    }
                                 }}
                             />
                         </div>
+
+                        {mode === 'setup' && (
+                            <div style={{ display: 'flex', gap: '10px', marginTop: '1rem', flexWrap: 'wrap', justifyContent: 'center', background: 'var(--bg-glass)', padding: '10px', borderRadius: '8px' }}>
+                                <div style={{ display: 'flex', gap: '5px' }}>
+                                    {[
+                                        { id: 'wP', icon: '♙' }, { id: 'wN', icon: '♘' }, { id: 'wB', icon: '♗' },
+                                        { id: 'wR', icon: '♖' }, { id: 'wQ', icon: '♕' }, { id: 'wK', icon: '♔' }
+                                    ].map(p => (
+                                        <button key={p.id} onClick={() => setSelectedPiece(p.id)} style={{ width: '40px', height: '40px', fontSize: '24px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', border: selectedPiece === p.id ? '2px solid var(--accent-primary)' : '1px solid transparent', borderRadius: '4px', background: 'rgba(255,255,255,0.1)', color: 'white' }}>{p.icon}</button>
+                                    ))}
+                                </div>
+                                <div style={{ display: 'flex', gap: '5px' }}>
+                                    {[
+                                        { id: 'bP', icon: '♟' }, { id: 'bN', icon: '♞' }, { id: 'bB', icon: '♝' },
+                                        { id: 'bR', icon: '♜' }, { id: 'bQ', icon: '♛' }, { id: 'bK', icon: '♚' }
+                                    ].map(p => (
+                                        <button key={p.id} onClick={() => setSelectedPiece(p.id)} style={{ width: '40px', height: '40px', fontSize: '24px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', border: selectedPiece === p.id ? '2px solid var(--accent-primary)' : '1px solid transparent', borderRadius: '4px', background: 'rgba(255,255,255,0.1)', color: 'white' }}>{p.icon}</button>
+                                    ))}
+                                </div>
+                                <button onClick={() => setSelectedPiece('trash')} style={{ width: '40px', height: '40px', fontSize: '20px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', border: selectedPiece === 'trash' ? '2px solid #ef4444' : '1px solid transparent', borderRadius: '4px', background: 'rgba(239, 68, 68, 0.2)', color: '#ef4444' }}>🗑️</button>
+                            </div>
+                        )}
                     </div>
                 </section>
 
