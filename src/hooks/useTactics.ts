@@ -35,24 +35,35 @@ export function useTactics() {
     const [isCompleted, setIsCompleted] = useState(false);
 
     useEffect(() => {
-        const fetchTactics = async () => {
-            try {
-                const { data, error } = await supabase.from('tactics').select('*');
-                if (error) throw error;
-                if (data && data.length > 0) {
-                    setTacticsList(data);
-                } else {
-                    setAkeemMessage("No tactics found. Add some from the Creator view!");
+        let cancelled = false;
+
+        const fetchWithRetry = async () => {
+            for (let attempt = 1; attempt <= 3; attempt++) {
+                try {
+                    const { data, error } = await supabase.from('tactics').select('*');
+                    if (cancelled) return;
+                    if (error) throw error;
+                    if (data && data.length > 0) {
+                        setTacticsList(data);
+                    } else {
+                        setAkeemMessage("No tactics found. Add some from the Creator view!");
+                    }
+                    // Success — exit loop
+                    break;
+                } catch (err) {
+                    console.error(`Tactics fetch attempt ${attempt} failed:`, err);
+                    if (!cancelled && attempt < 3) {
+                        await new Promise(r => setTimeout(r, 1500 * attempt));
+                    } else if (!cancelled) {
+                        setAkeemMessage("Could not load tactics. Please refresh the page.");
+                    }
                 }
-            } catch (err) {
-                console.error("Error fetching tactics:", err);
-                setAkeemMessage("Failed to load tactics from database.");
-            } finally {
-                setIsLoading(false);
             }
+            if (!cancelled) setIsLoading(false);
         };
 
-        fetchTactics();
+        fetchWithRetry();
+        return () => { cancelled = true; };
     }, []);
 
     const tactic = tacticsList[currentTacticIndex];
