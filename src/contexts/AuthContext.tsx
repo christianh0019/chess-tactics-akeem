@@ -1,11 +1,11 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
 import type { User } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
 
 type AuthContextType = {
     user: User | null;
     isAdmin: boolean;
-    loading: boolean;
+    loading: boolean;   // true until first auth event fully processed
     signOut: () => Promise<void>;
 };
 
@@ -21,8 +21,11 @@ export const useAuth = () => useContext(AuthContext);
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     const [user, setUser] = useState<User | null>(null);
     const [isAdmin, setIsAdmin] = useState(false);
-    // loading stays true until BOTH auth state AND admin check are done
     const [loading, setLoading] = useState(true);
+
+    // Cache admin status per user ID — avoids redundant DB calls on TOKEN_REFRESHED etc.
+    const adminCache = useRef<Map<string, boolean>>(new Map());
+    const initialLoadDone = useRef(false);
 
     useEffect(() => {
         let isMounted = true;
@@ -32,7 +35,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             if (isMounted) setLoading(false);
         }, 6000);
 
-        const checkAdminStatus = async (userId: string): Promise<boolean> => {
+        const resolveAdminStatus = async (userId: string): Promise<boolean> => {
+            // Return cached result immediately if we already checked this user
+            if (adminCache.current.has(userId)) {
+                return adminCache.current.get(userId)!;
+            }
+
             try {
                 const { data, error } = await supabase
                     .from('profiles')
@@ -40,16 +48,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                     .eq('id', userId)
                     .single();
                 if (error) throw error;
-                return !!data?.is_admin;
+                const result = !!data?.is_admin;
+                adminCache.current.set(userId, result);
+                return result;
             } catch (err) {
                 console.error('Admin check failed:', err);
-                return false;
+                // If already cached from a previous call, keep it
+                return adminCache.current.get(userId) ?? false;
             }
         };
 
-        // onAuthStateChange fires immediately with INITIAL_SESSION event —
-        // it reads from localStorage so it's synchronous-ish.
-        // We await the admin check before marking auth as loaded.
         const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
             if (!isMounted) return;
 
@@ -57,16 +65,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             setUser(currentUser);
 
             if (currentUser) {
-                const adminStatus = await checkAdminStatus(currentUser.id);
-                if (isMounted) {
-                    setIsAdmin(adminStatus);
-                }
+                const adminStatus = await resolveAdminStatus(currentUser.id);
+                if (isMounted) setIsAdmin(adminStatus);
             } else {
                 setIsAdmin(false);
+                adminCache.current.clear(); // Clear cache on sign out
             }
 
-            // Only clear loading after the full auth + admin check cycle completes
-            if (isMounted) {
+            // Only call setLoading(false) once — on the very first auth event
+            if (!initialLoadDone.current && isMounted) {
+                initialLoadDone.current = true;
                 clearTimeout(safetyTimeout);
                 setLoading(false);
             }
@@ -80,9 +88,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }, []);
 
     const signOut = async () => {
-        await supabase.auth.signOut();
+        adminCache.current.clear();
         setUser(null);
         setIsAdmin(false);
+        await supabase.auth.signOut();
     };
 
     return (
