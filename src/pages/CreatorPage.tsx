@@ -1,57 +1,99 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { Chess } from 'chess.js';
 import { Chessboard } from 'react-chessboard';
 import { supabase } from '../lib/supabase';
-import '../components/SidebarLayout.css'; // Re-use common layout styles
+
+// Piece SVG URLs from the Lichess open-source piece set
+const PIECE_SVGS: Record<string, string> = {
+    wK: 'https://www.chess.com/chess-themes/pieces/neo/150/wk.png',
+    wQ: 'https://www.chess.com/chess-themes/pieces/neo/150/wq.png',
+    wR: 'https://www.chess.com/chess-themes/pieces/neo/150/wr.png',
+    wB: 'https://www.chess.com/chess-themes/pieces/neo/150/wb.png',
+    wN: 'https://www.chess.com/chess-themes/pieces/neo/150/wn.png',
+    wP: 'https://www.chess.com/chess-themes/pieces/neo/150/wp.png',
+    bK: 'https://www.chess.com/chess-themes/pieces/neo/150/bk.png',
+    bQ: 'https://www.chess.com/chess-themes/pieces/neo/150/bq.png',
+    bR: 'https://www.chess.com/chess-themes/pieces/neo/150/br.png',
+    bB: 'https://www.chess.com/chess-themes/pieces/neo/150/bb.png',
+    bN: 'https://www.chess.com/chess-themes/pieces/neo/150/bn.png',
+    bP: 'https://www.chess.com/chess-themes/pieces/neo/150/bp.png',
+};
+
+const PALETTE_PIECES = [
+    ['wK', 'wQ', 'wR', 'wB', 'wN', 'wP'],
+    ['bK', 'bQ', 'bR', 'bB', 'bN', 'bP'],
+];
 
 export default function CreatorPage() {
-    const [boardWidth] = useState(500);
-    const [game, setGame] = useState(new Chess());
+    const [boardWidth] = useState(480);
+    const [game, setGame] = useState(new Chess('8/8/8/8/8/8/8/8 w - - 0 1'));
     const [mode, setMode] = useState<'setup' | 'sequence'>('setup');
-    const [selectedPiece, setSelectedPiece] = useState<string | null>(null);
+    const [startingFen, setStartingFen] = useState('8/8/8/8/8/8/8/8 w - - 0 1');
+    const [solution, setSolution] = useState<string[]>([]);
+    const [dragPiece, setDragPiece] = useState<string | null>(null); // "wN", "bQ", etc. from palette
+    const [dropHighlight, setDropHighlight] = useState<string | null>(null);
 
-    // Tactic State
+    // Tactic metadata
     const [tacticTitle, setTacticTitle] = useState('');
     const [successMessage, setSuccessMessage] = useState('');
     const [defaultWrongMessage, setDefaultWrongMessage] = useState('');
-    const [solution, setSolution] = useState<string[]>([]);
-    const [startingFen, setStartingFen] = useState('8/8/8/8/8/8/8/8 w - - 0 1');
+    const [isSaving, setIsSaving] = useState(false);
+    const [saveMessage, setSaveMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
 
-    const handlePieceDrop = (sourceSquare: string, targetSquare: string, piece: string) => {
-        if (!targetSquare) return false;
+    const dragSourceRef = useRef<string | null>(null); // "palette" or square like "e4"
 
+    // ─── Setup Mode: piece placed from palette via drag ───
+    const placePieceOnSquare = (pieceCode: string, square: string) => {
+        const gameCopy = new Chess(game.fen());
+        gameCopy.put({
+            type: pieceCode[1].toLowerCase() as any,
+            color: pieceCode[0] as any,
+        }, square as any);
+        setGame(gameCopy);
+        setStartingFen(gameCopy.fen());
+    };
+
+    const removePieceFromSquare = (square: string) => {
+        const gameCopy = new Chess(game.fen());
+        gameCopy.remove(square as any);
+        setGame(gameCopy);
+        setStartingFen(gameCopy.fen());
+    };
+
+    // ─── Handle piece drop ON the board (board-to-board in setup, legal in sequence) ───
+    const handlePieceDrop = ({ sourceSquare, targetSquare, piece }: { sourceSquare: string; targetSquare: string; piece: string }) => {
         if (mode === 'setup') {
             const gameCopy = new Chess(game.fen());
-
-            // Allow piece movement on the board during setup mode
-            const existingPiece = gameCopy.get(sourceSquare as any);
-            if (existingPiece) {
-                gameCopy.remove(sourceSquare as any);
-                gameCopy.put({ type: piece[1].toLowerCase() as any, color: piece[0] as any }, targetSquare as any);
-                setGame(gameCopy);
-                setStartingFen(gameCopy.fen());
-            }
+            gameCopy.remove(sourceSquare as any);
+            gameCopy.put({ type: piece[1].toLowerCase() as any, color: piece[0] as any }, targetSquare as any);
+            setGame(gameCopy);
+            setStartingFen(gameCopy.fen());
             return true;
         } else {
-            // Sequence mode: Play legal moves to build the solution array
+            // Sequence recording
             const gameCopy = new Chess(game.fen());
             try {
                 const move = gameCopy.move({
                     from: sourceSquare,
                     to: targetSquare,
-                    promotion: piece[1] ? piece[1].toLowerCase() : 'q',
+                    promotion: 'q',
                 });
-
                 if (move) {
                     setGame(gameCopy);
-                    setSolution([...solution, move.san]);
+                    setSolution(prev => [...prev, move.san]);
                     return true;
                 }
-            } catch (e) {
-                return false;
-            }
+            } catch { }
         }
         return false;
+    };
+
+    const toggleMode = (newMode: 'setup' | 'sequence') => {
+        if (newMode === 'sequence' && mode === 'setup') {
+            setGame(new Chess(startingFen));
+            setSolution([]);
+        }
+        setMode(newMode);
     };
 
     const undoMove = () => {
@@ -59,259 +101,286 @@ export default function CreatorPage() {
         const gameCopy = new Chess(game.fen());
         gameCopy.undo();
         setGame(gameCopy);
-        setSolution(solution.slice(0, -1));
+        setSolution(prev => prev.slice(0, -1));
     };
 
-    const toggleMode = (newMode: 'setup' | 'sequence') => {
-        if (newMode === 'sequence' && mode === 'setup') {
-            // Lock in starting FEN for the sequence
-            setGame(new Chess(startingFen));
-            setSolution([]);
-        }
-        setMode(newMode);
+    const setTurn = (turn: 'w' | 'b') => {
+        const parts = game.fen().split(' ');
+        parts[1] = turn;
+        try {
+            const newGame = new Chess(parts.join(' '));
+            setGame(newGame);
+            setStartingFen(parts.join(' '));
+        } catch { }
     };
 
-    const [isSaving, setIsSaving] = useState(false);
-    const [saveMessage, setSaveMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
+    const clearBoard = () => {
+        const empty = new Chess('8/8/8/8/8/8/8/8 w - - 0 1');
+        setGame(empty);
+        setStartingFen(empty.fen());
+    };
 
     const exportTactic = async () => {
         setIsSaving(true);
         setSaveMessage(null);
-
         try {
-            const exportedTactic = {
+            const { error } = await supabase.from('tactics').insert([{
                 id: `tactic_${Math.random().toString(36).substr(2, 9)}`,
                 title: tacticTitle,
                 fen: startingFen,
                 turn: game.turn(),
-                solution: solution,
+                solution,
                 success_message: successMessage,
                 default_wrong_message: defaultWrongMessage,
-                wrong_move_traps: [] // Currently skipped in Creator view, could add later
-            };
-
-            const { error } = await supabase
-                .from('tactics')
-                .insert([exportedTactic]);
-
+                wrong_move_traps: [],
+            }]);
             if (error) throw error;
-
-            setSaveMessage({ text: 'Tactic saved to Database!', type: 'success' });
-
-            // Clear form
+            setSaveMessage({ text: '✓ Tactic saved to database!', type: 'success' });
             setTacticTitle('');
             setSuccessMessage('');
             setDefaultWrongMessage('');
             setSolution([]);
             setMode('setup');
-
-        } catch (error: any) {
-            console.error('Failed to save tactic:', error);
-            setSaveMessage({ text: error.message || 'Failed to save tactic to Database.', type: 'error' });
+        } catch (err: any) {
+            setSaveMessage({ text: err.message || 'Failed to save.', type: 'error' });
         } finally {
             setIsSaving(false);
         }
     };
 
+    // ─── squareRenderer: intercept HTML5 drops from the palette ───
+    const squareRenderer = ({ square, squareColor, children }: any) => {
+        const isHighlighted = dropHighlight === square;
+        return (
+            <div
+                style={{ width: '100%', height: '100%', position: 'relative', backgroundColor: isHighlighted ? 'rgba(59,130,246,0.4)' : undefined }}
+                onDragOver={(e) => {
+                    if (mode === 'setup') {
+                        e.preventDefault();
+                        setDropHighlight(square);
+                    }
+                }}
+                onDragLeave={() => setDropHighlight(null)}
+                onDrop={(e) => {
+                    if (mode !== 'setup') return;
+                    e.preventDefault();
+                    setDropHighlight(null);
+                    const incoming = dragPiece || e.dataTransfer.getData('piece');
+                    const fromSquare = dragSourceRef.current;
+
+                    if (incoming && fromSquare === 'palette') {
+                        placePieceOnSquare(incoming, square);
+                    } else if (fromSquare && fromSquare !== 'palette' && fromSquare !== square) {
+                        // Board-to-board move — let react-chessboard handle via onPieceDrop
+                    }
+                    setDragPiece(null);
+                    dragSourceRef.current = null;
+                }}
+                onDoubleClick={() => {
+                    if (mode === 'setup') removePieceFromSquare(square);
+                }}
+            >
+                {children}
+            </div>
+        );
+    };
+
     return (
         <div className="page-container animate-fade-in">
+            {/* Header */}
             <header className="page-header">
                 <div>
                     <h1>Tactic Creator</h1>
-                    <p className="page-subtitle">Build new tactics from scratch for Akeem's curriculum.</p>
+                    <p className="page-subtitle">Build new tactics for Akeem's curriculum.</p>
                 </div>
-
                 <div className="tactic-selector-container">
                     <button
-                        className={`tactic-select ${mode === 'setup' ? 'active-mode' : ''}`}
                         onClick={() => toggleMode('setup')}
-                        style={{ background: mode === 'setup' ? 'var(--accent-primary)' : 'var(--bg-glass)' }}
+                        style={{ padding: '0.5rem 1.25rem', background: mode === 'setup' ? 'var(--accent-primary)' : 'var(--bg-glass)', border: 'none', borderRadius: '6px', color: 'white', cursor: 'pointer', fontWeight: mode === 'setup' ? 'bold' : 'normal', transition: 'all 0.2s' }}
                     >
-                        Setup Board
+                        1 · Setup Board
                     </button>
                     <button
-                        className={`tactic-select ${mode === 'sequence' ? 'active-mode' : ''}`}
                         onClick={() => toggleMode('sequence')}
-                        style={{ marginLeft: '10px', background: mode === 'sequence' ? 'var(--accent-warning)' : 'var(--bg-glass)' }}
+                        style={{ marginLeft: '8px', padding: '0.5rem 1.25rem', background: mode === 'sequence' ? 'var(--accent-warning)' : 'var(--bg-glass)', border: 'none', borderRadius: '6px', color: 'white', cursor: 'pointer', fontWeight: mode === 'sequence' ? 'bold' : 'normal', transition: 'all 0.2s' }}
                     >
-                        Record Sequence
+                        2 · Record Moves
                     </button>
                 </div>
             </header>
 
-            <div className="main-content" style={{ display: 'flex', gap: '2rem', flexWrap: 'wrap' }}>
-                <section className="board-section glass-panel" style={{ padding: '2rem', flex: '1', minWidth: '400px' }}>
-
+            <div className="main-content" style={{ display: 'flex', gap: '1.5rem', flexWrap: 'wrap', alignItems: 'flex-start' }}>
+                {/* Left: Board + Palette */}
+                <section className="board-section glass-panel" style={{ padding: '1.5rem', flex: '0 0 auto' }}>
                     {mode === 'setup' && (
-                        <div style={{ marginBottom: '1rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                            <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
-                                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                                    <label style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>FEN (Paste here to load a layout quickly):</label>
+                        <>
+                            {/* Controls row */}
+                            <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap' }}>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: 1 }}>
+                                    <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Paste FEN</label>
                                     <input
                                         value={startingFen}
                                         onChange={e => {
                                             setStartingFen(e.target.value);
-                                            try { setGame(new Chess(e.target.value)); } catch (e) { }
+                                            try { setGame(new Chess(e.target.value)); } catch { }
                                         }}
-                                        style={{ padding: '0.5rem', background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(255,255,255,0.1)', color: 'var(--accent-primary)', width: '100%', fontFamily: 'monospace', borderRadius: '4px' }}
+                                        style={{ padding: '0.4rem 0.6rem', background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(255,255,255,0.12)', color: 'var(--accent-primary)', fontFamily: 'monospace', fontSize: '0.8rem', borderRadius: '4px', minWidth: '200px' }}
                                     />
                                 </div>
-                                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                                    <label style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>Player To Move</label>
-                                    <select
-                                        value={game.turn()}
-                                        onChange={(e) => {
-                                            const newFen = game.fen();
-                                            const parts = newFen.split(' ');
-                                            parts[1] = e.target.value;
-                                            try {
-                                                const newGame = new Chess(parts.join(' '));
-                                                setGame(newGame);
-                                                setStartingFen(parts.join(' '));
-                                            } catch (e) { }
-                                        }}
-                                        style={{ padding: '0.5rem', background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(255,255,255,0.1)', color: 'white', borderRadius: '4px', cursor: 'pointer' }}
-                                    >
-                                        <option value="w">White</option>
-                                        <option value="b">Black</option>
-                                    </select>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                    <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>To Move</label>
+                                    <div style={{ display: 'flex', gap: '4px' }}>
+                                        {(['w', 'b'] as const).map(c => (
+                                            <button key={c} onClick={() => setTurn(c)} style={{ padding: '0.4rem 0.75rem', background: game.turn() === c ? (c === 'w' ? 'rgba(255,255,255,0.9)' : 'rgba(0,0,0,0.6)') : 'rgba(255,255,255,0.1)', color: game.turn() === c ? (c === 'w' ? '#111' : '#fff') : '#aaa', border: `2px solid ${game.turn() === c ? 'var(--accent-primary)' : 'transparent'}`, borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold', fontSize: '0.85rem' }}>
+                                                {c === 'w' ? '♔ White' : '♚ Black'}
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                    <label style={{ fontSize: '0.75rem', color: 'transparent' }}>-</label>
+                                    <button onClick={clearBoard} style={{ padding: '0.4rem 0.75rem', background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.3)', color: '#ef4444', borderRadius: '4px', cursor: 'pointer', fontSize: '0.85rem' }}>
+                                        Clear
+                                    </button>
                                 </div>
                             </div>
-                        </div>
+                        </>
                     )}
 
-                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginBottom: '1rem' }}>
+                    <div style={{ display: 'flex', gap: '1rem', alignItems: 'flex-start' }}>
+                        {/* Piece Palette — only show in setup mode */}
+                        {mode === 'setup' && (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', paddingTop: '4px' }}>
+                                <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)', textAlign: 'center', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Drag</p>
+                                {PALETTE_PIECES.map((row, rowIdx) => (
+                                    <div key={rowIdx} style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                        {row.map(pieceCode => (
+                                            <div
+                                                key={pieceCode}
+                                                draggable
+                                                onDragStart={(e) => {
+                                                    setDragPiece(pieceCode);
+                                                    dragSourceRef.current = 'palette';
+                                                    e.dataTransfer.setData('piece', pieceCode);
+                                                    e.dataTransfer.effectAllowed = 'copy';
+                                                }}
+                                                onDragEnd={() => {
+                                                    setDragPiece(null);
+                                                    dragSourceRef.current = null;
+                                                }}
+                                                title={pieceCode}
+                                                style={{
+                                                    width: '44px',
+                                                    height: '44px',
+                                                    cursor: 'grab',
+                                                    display: 'flex',
+                                                    alignItems: 'center',
+                                                    justifyContent: 'center',
+                                                    borderRadius: '6px',
+                                                    background: dragPiece === pieceCode ? 'rgba(99,102,241,0.3)' : (rowIdx === 0 ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.3)'),
+                                                    border: dragPiece === pieceCode ? '2px solid var(--accent-primary)' : '1px solid rgba(255,255,255,0.1)',
+                                                    transition: 'all 0.15s',
+                                                    userSelect: 'none',
+                                                }}
+                                            >
+                                                <img
+                                                    src={PIECE_SVGS[pieceCode]}
+                                                    alt={pieceCode}
+                                                    style={{ width: '36px', height: '36px', pointerEvents: 'none' }}
+                                                    draggable={false}
+                                                />
+                                            </div>
+                                        ))}
+                                    </div>
+                                ))}
+                                <p style={{ fontSize: '0.6rem', color: 'var(--text-muted)', textAlign: 'center', marginTop: '4px' }}>Dbl-click<br />to remove</p>
+                            </div>
+                        )}
+
+                        {/* Chessboard */}
                         <div style={{ width: boardWidth }}>
                             <Chessboard
                                 options={{
                                     boardOrientation: game.turn() === 'w' ? 'white' : 'black',
-                                    id: "creator-board",
-                                    position: mode === 'setup' ? startingFen : game.fen(),
+                                    id: 'creator-board',
+                                    position: game.fen(),
                                     allowDragging: true,
                                     darkSquareStyle: { backgroundColor: 'var(--board-dark)' },
                                     lightSquareStyle: { backgroundColor: 'var(--board-light)' },
                                     dropSquareStyle: { boxShadow: 'inset 0 0 1px 6px rgba(59, 130, 246, 0.5)' },
                                     onPieceDrop: handlePieceDrop as any,
-                                    onSquareClick: ({ square }) => {
-                                        if (mode === 'setup' && selectedPiece) {
-                                            const gameCopy = new Chess(game.fen());
-                                            if (selectedPiece === 'trash') {
-                                                gameCopy.remove(square as any);
-                                            } else {
-                                                gameCopy.put({ type: selectedPiece[1].toLowerCase() as any, color: selectedPiece[0] as any }, square as any);
-                                            }
-                                            setGame(gameCopy);
-                                            setStartingFen(gameCopy.fen());
-                                        }
-                                    }
+                                    squareRenderer: squareRenderer,
                                 }}
                             />
                         </div>
-
-                        {mode === 'setup' && (
-                            <div style={{ display: 'flex', gap: '10px', marginTop: '1rem', flexWrap: 'wrap', justifyContent: 'center', background: 'var(--bg-glass)', padding: '10px', borderRadius: '8px' }}>
-                                <div style={{ display: 'flex', gap: '5px' }}>
-                                    {[
-                                        { id: 'wP', icon: '♙' }, { id: 'wN', icon: '♘' }, { id: 'wB', icon: '♗' },
-                                        { id: 'wR', icon: '♖' }, { id: 'wQ', icon: '♕' }, { id: 'wK', icon: '♔' }
-                                    ].map(p => (
-                                        <button key={p.id} onClick={() => setSelectedPiece(p.id)} style={{ width: '40px', height: '40px', fontSize: '24px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', border: selectedPiece === p.id ? '2px solid var(--accent-primary)' : '1px solid transparent', borderRadius: '4px', background: 'rgba(255,255,255,0.1)', color: 'white' }}>{p.icon}</button>
-                                    ))}
-                                </div>
-                                <div style={{ display: 'flex', gap: '5px' }}>
-                                    {[
-                                        { id: 'bP', icon: '♟' }, { id: 'bN', icon: '♞' }, { id: 'bB', icon: '♝' },
-                                        { id: 'bR', icon: '♜' }, { id: 'bQ', icon: '♛' }, { id: 'bK', icon: '♚' }
-                                    ].map(p => (
-                                        <button key={p.id} onClick={() => setSelectedPiece(p.id)} style={{ width: '40px', height: '40px', fontSize: '24px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', border: selectedPiece === p.id ? '2px solid var(--accent-primary)' : '1px solid transparent', borderRadius: '4px', background: 'rgba(255,255,255,0.1)', color: 'white' }}>{p.icon}</button>
-                                    ))}
-                                </div>
-                                <button onClick={() => setSelectedPiece('trash')} style={{ width: '40px', height: '40px', fontSize: '20px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', border: selectedPiece === 'trash' ? '2px solid #ef4444' : '1px solid transparent', borderRadius: '4px', background: 'rgba(239, 68, 68, 0.2)', color: '#ef4444' }}>🗑️</button>
-                            </div>
-                        )}
                     </div>
                 </section>
 
-                <aside className="glass-panel" style={{ flex: '1', minWidth: '300px', padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                    <h3>Tactic Metadata</h3>
+                {/* Right: Metadata Panel */}
+                <aside className="glass-panel" style={{ flex: '1', minWidth: '280px', padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                    <h3 style={{ marginBottom: '0.25rem' }}>Tactic Info</h3>
 
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                        <label>Title</label>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                        <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Title</label>
                         <input
                             value={tacticTitle}
                             onChange={e => setTacticTitle(e.target.value)}
-                            placeholder="e.g. The Greek Gift"
+                            placeholder="e.g. The Greek Gift Sacrifice"
                             style={{ padding: '0.5rem', background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(255,255,255,0.1)', color: 'white', borderRadius: '4px' }}
                         />
                     </div>
 
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                        <label>Success Message</label>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                        <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Success Message</label>
                         <textarea
                             value={successMessage}
                             onChange={e => setSuccessMessage(e.target.value)}
-                            placeholder="Akeem's praise..."
-                            style={{ padding: '0.5rem', background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(255,255,255,0.1)', color: 'white', borderRadius: '4px', minHeight: '60px' }}
+                            placeholder="Akeem's praise when they get it right…"
+                            style={{ padding: '0.5rem', background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(255,255,255,0.1)', color: 'white', borderRadius: '4px', minHeight: '70px', resize: 'vertical' }}
                         />
                     </div>
 
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                        <label>Default Wrong Message</label>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                        <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Wrong Move Hint</label>
                         <textarea
                             value={defaultWrongMessage}
                             onChange={e => setDefaultWrongMessage(e.target.value)}
-                            placeholder="Akeem's hint..."
-                            style={{ padding: '0.5rem', background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(255,255,255,0.1)', color: 'white', borderRadius: '4px', minHeight: '60px' }}
+                            placeholder="Akeem's hint when they pick a wrong move…"
+                            style={{ padding: '0.5rem', background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(255,255,255,0.1)', color: 'white', borderRadius: '4px', minHeight: '70px', resize: 'vertical' }}
                         />
                     </div>
 
                     {mode === 'sequence' && (
-                        <div style={{ marginTop: '1rem', padding: '1rem', background: 'rgba(0,0,0,0.2)', borderRadius: '8px' }}>
-                            <h4>Recorded Solution</h4>
-                            <div style={{ fontFamily: 'monospace', color: 'var(--accent-warning)', margin: '0.5rem 0' }}>
-                                [{solution.map(s => `"${s}"`).join(', ')}]
+                        <div style={{ marginTop: '0.5rem', padding: '1rem', background: 'rgba(0,0,0,0.2)', borderRadius: '8px', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                            <div>
+                                <h4 style={{ marginBottom: '0.5rem', fontSize: '0.9rem' }}>Recorded Solution</h4>
+                                <div style={{ fontFamily: 'monospace', color: 'var(--accent-warning)', fontSize: '0.9rem', minHeight: '24px', wordBreak: 'break-all' }}>
+                                    {solution.length > 0 ? solution.join(' → ') : <span style={{ color: 'var(--text-muted)' }}>Make moves on the board…</span>}
+                                </div>
                             </div>
                             <button
                                 onClick={undoMove}
                                 disabled={solution.length === 0}
-                                style={{ width: '100%', marginBottom: '1rem', padding: '0.5rem 1rem', background: 'rgba(255,255,255,0.1)', color: 'white', border: 'none', borderRadius: '4px', cursor: solution.length ? 'pointer' : 'not-allowed' }}
+                                style={{ padding: '0.5rem', background: 'rgba(255,255,255,0.08)', color: solution.length ? 'white' : '#555', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '4px', cursor: solution.length ? 'pointer' : 'not-allowed' }}
                             >
-                                Undo Last Move
-                            </button>
-
-                            {saveMessage && (
-                                <div style={{
-                                    padding: '0.75rem',
-                                    marginBottom: '1rem',
-                                    borderRadius: '4px',
-                                    backgroundColor: saveMessage.type === 'error' ? 'rgba(239, 68, 68, 0.2)' : 'rgba(34, 197, 94, 0.2)',
-                                    color: saveMessage.type === 'error' ? '#ef4444' : '#22c55e',
-                                    fontSize: '0.9rem',
-                                    textAlign: 'center'
-                                }}>
-                                    {saveMessage.text}
-                                </div>
-                            )}
-
-                            <button
-                                onClick={exportTactic}
-                                disabled={isSaving}
-                                style={{
-                                    padding: '0.75rem 1rem',
-                                    background: 'var(--accent-primary)',
-                                    color: 'white',
-                                    border: 'none',
-                                    borderRadius: '4px',
-                                    cursor: isSaving ? 'not-allowed' : 'pointer',
-                                    width: '100%',
-                                    fontWeight: 'bold',
-                                    opacity: isSaving ? 0.7 : 1
-                                }}
-                            >
-                                {isSaving ? 'Saving...' : 'Publish to Database'}
+                                ↩ Undo Last Move
                             </button>
                         </div>
                     )}
+
+                    {saveMessage && (
+                        <div style={{ padding: '0.75rem', borderRadius: '4px', background: saveMessage.type === 'error' ? 'rgba(239,68,68,0.15)' : 'rgba(34,197,94,0.15)', color: saveMessage.type === 'error' ? '#ef4444' : '#22c55e', fontSize: '0.9rem', textAlign: 'center' }}>
+                            {saveMessage.text}
+                        </div>
+                    )}
+
+                    <button
+                        onClick={exportTactic}
+                        disabled={isSaving || mode !== 'sequence' || solution.length === 0}
+                        style={{ marginTop: 'auto', padding: '0.75rem', background: (mode === 'sequence' && solution.length > 0) ? 'var(--accent-primary)' : 'rgba(255,255,255,0.1)', color: 'white', border: 'none', borderRadius: '6px', cursor: (mode === 'sequence' && solution.length > 0 && !isSaving) ? 'pointer' : 'not-allowed', fontWeight: 'bold', fontSize: '1rem', opacity: isSaving ? 0.7 : 1, transition: 'all 0.2s' }}
+                    >
+                        {isSaving ? 'Saving…' : '🚀 Publish to Database'}
+                    </button>
                 </aside>
             </div>
         </div>
